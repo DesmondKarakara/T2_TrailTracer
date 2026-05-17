@@ -172,20 +172,6 @@ $$
 P_k^- = P_{k-1} + Q
 $$
 
-### 1D Kalman Filter for Step Length
-
-Step lengths vary naturally. A 1D Kalman filter smooths the measured step length:
-
-**Prediction:**  
-$$
-\hat{x}_k^- = \hat{x}_{k-1}
-$$
-
-**Error covariance prediction:**  
-$$
-P_k^- = P_{k-1} + Q
-$$
-
 **Kalman Gain:**  
 $$
 K_k = \frac{P_k^-}{P_k^- + R}
