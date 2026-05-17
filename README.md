@@ -1,452 +1,320 @@
-# T2_TrailTracer
-# TrailTracer Final
+# TrailTracer – Offline Pedestrian Navigation
 
 TrailTracer is an offline pedestrian navigation prototype based on dead reckoning.  
-This final version uses:
+It uses an **ESP32**, **MPU6050 IMU**, **SSD1306 OLED** display, and **MAX98357A** audio amplifier.  
+A Python visualizer generates CSV, KML, PNG, and HTML outputs from logged data.
 
-- ESP32
-- MPU6050 IMU
-- SSD1306 OLED
-- MAX98357A audio amplifier hook
-- Python visualizer for CSV / KML / PNG / HTML output
+---
 
-## Coordinate system
+## Table of Contents
 
-The project uses a local navigation frame:
+1. [System Overview](#system-overview)
+2. [Coordinate System](#coordinate-system)
+3. [Mathematical Foundation](#mathematical-foundation)
+   - [Position Update](#position-update-equations)
+   - [Accelerometer Magnitude](#accelerometer-magnitude)
+   - [Low-Pass Filter](#low-pass-filter)
+   - [Step Detection](#step-detection)
+   - [Mahony Filter (Orientation)](#mahony-filter-orientation-estimation)
+   - [Yaw / Heading Angle](#yaw--heading-angle)
+   - [1D Kalman Filter for Step Length](#1d-kalman-filter-for-step-length)
+   - [Distance to Home](#distance-to-home)
+   - [Bearing to Home](#bearing-to-home)
+   - [Turn Decision Logic](#turn-decision-logic)
+4. [Data Logging](#data-logging)
+   - [Excel Columns](#excel-columns)
+   - [guide_idx Meaning](#guide_idx-meaning)
+5. [Why Earlier Maps Looked Wrong](#why-earlier-map-looked-wrong)
+6. [Processing Pipeline](#processing-pipeline)
+   - [ESP32 Processing](#esp32-processing)
+   - [OLED UI Improvements](#oled-ui-improvements)
+   - [Python Overlay Improvements](#python-overlay-improvements)
+7. [Recommended Parameters](#recommended-parameters)
+8. [How to Run](#how-to-run)
+   - [ESP32 Setup](#esp32)
+   - [Python Setup](#python)
+9. [Output Files](#output-files)
+10. [Notes & Limitations](#notes--limitations)
+11. [Final Summary](#final-summary)
 
-# TrailTracer – Simple Mathematical Explanation
+---
 
-## 1. Coordinate System Used
+## System Overview
 
-TrailTracer uses a 2D coordinate system:
+TrailTracer provides real-time pedestrian navigation without GPS by:
 
-* **X-axis** → East / West movement
-* **Y-axis** → North / South movement
-* **Home position** = `(0,0)`
+- Detecting steps with an MPU6050 accelerometer/gyroscope.
+- Estimating heading using a Mahony AHRS filter.
+- Smoothing motion with low-pass and Kalman filters.
+- Updating local X/Y coordinates (dead reckoning).
+- Guiding the user back to the starting point via visual/audio cues.
+
+---
+
+## Coordinate System
+
+TrailTracer uses a **2D local navigation frame**:
+
+- **X‑axis** → East / West movement
+- **Y‑axis** → North / South movement
+- **Home position** = `(0,0)`
 
 ### Direction Rules
 
 | Direction | X value  | Y value  |
-| --------- | -------- | -------- |
+|-----------|----------|----------|
 | North     | 0        | Positive |
 | South     | 0        | Negative |
 | East      | Positive | 0        |
 | West      | Negative | 0        |
 
-The MPU6050 gives orientation (heading angle).
+Heading angle from the MPU6050 (after Mahony filtering):
 
-Heading is measured:
-
-* `0° = North`
-* `90° = East`
-* `180° = South`
-* `270° = West`
+- `0°` = North  
+- `90°` = East  
+- `180°` = South  
+- `270°` = West
 
 ---
 
-# 2. Position Update Equations
+## Mathematical Foundation
 
-Each detected step updates the current position.
+### Position Update Equations
 
-## Equations
+Each detected step updates the current position:
 
-[
+$$
 x_k = x_{k-1} + s_k \sin(\theta_k)
-]
+$$
 
-[
+$$
 y_k = y_{k-1} + s_k \cos(\theta_k)
-]
+$$
 
-Where:
+| Symbol     | Meaning                  |
+|------------|--------------------------|
+| $x_k, y_k$ | Current position         |
+| $s_k$      | Step length (meters)     |
+| $\theta_k$ | Heading angle (degrees)  |
 
-| Symbol     | Meaning            |
-| ---------- | ------------------ |
-| (x_k)      | Current X position |
-| (y_k)      | Current Y position |
-| (s_k)      | Step length        |
-| (\theta_k) | Heading angle      |
+#### Example
 
----
-
-# 3. Example Movement
-
-Suppose:
-
-* Step length = `0.7 m`
-* Heading = `90°`
-
-Since:
-
-[
-\sin(90°)=1
-]
-
-[
-\cos(90°)=0
-]
-
-Then:
-
-[
-dx = 0.7 \times 1 = 0.7
-]
-
-[
-dy = 0.7 \times 0 = 0
-]
-
-So:
-
-* X increases by `0.7`
-* Y remains same
-
-This means the user moved EAST.
+Step length = $0.7$ m, heading = $90^\circ$ (East):  
+$\sin(90^\circ)=1$, $\cos(90^\circ)=0$ → $dx = 0.7$, $dy = 0$.  
+X increases by 0.7 m, Y unchanged → movement East.
 
 ---
 
-# 4. Accelerometer Magnitude
+### Accelerometer Magnitude
 
-The MPU6050 provides:
+Raw accelerometer readings $A_x, A_y, A_z$ are combined to remove orientation dependency:
 
-* Ax
-* Ay
-* Az
-
-These are combined into one magnitude value.
-
-## Formula
-
-[
-a_{mag} = \sqrt{Ax^2 + Ay^2 + Az^2}
-]
-
-This removes orientation dependency.
+$$
+a_{mag} = \sqrt{A_x^2 + A_y^2 + A_z^2}
+$$
 
 ---
 
-# 5. Low-Pass Filter
+### Low-Pass Filter
 
-The accelerometer signal contains noise.
+A first-order IIR low-pass filter smooths the acceleration signal:
 
-A low-pass filter smooths the signal.
+$$
+a_f[k] = \alpha \, a_f[k-1] + (1-\alpha) \, a_{mag}[k]
+$$
 
-## Formula
-
-[
-a_f[k] = \alpha a_f[k-1] + (1-\alpha)a_{mag}[k]
-]
-
-Where:
-
-| Symbol     | Meaning                 |
-| ---------- | ----------------------- |
-| (a_f[k])   | Current filtered value  |
-| (a_f[k-1]) | Previous filtered value |
-| (\alpha)   | Filter constant         |
-
-Typical value:
-
-[
-\alpha = 0.9
-]
-
-This keeps walking motion while removing vibration noise.
+Typical $\alpha = 0.9$ keeps walking motion while removing vibration noise.
 
 ---
 
-# 6. Step Detection
+### Step Detection
 
 A step is detected when:
 
-1. Filtered acceleration crosses threshold
-2. Signal behaves like a peak
-3. Enough time passed from previous step
+1. Filtered acceleration exceeds a threshold: $a_f > \text{Threshold}$
+2. The signal shows a clear peak.
+3. At least **300 ms** have passed since the last step.
 
-## Conditions
-
-[
-a_f > Threshold
-]
-
-AND
-
-[
-TimeSinceLastStep > 300ms
-]
-
-Typical threshold:
-
-[
-Threshold = 11.2 ; m/s^2
-]
+Typical threshold: $11.2 \, \text{m/s}^2$.
 
 ---
 
-# 7. Mahony Filter (Orientation Estimation)
+### Mahony Filter (Orientation Estimation)
 
-The MPU6050 contains:
+The MPU6050 provides both accelerometer (stable but noisy) and gyroscope (smooth but drifting).  
+The Mahony filter fuses them to produce stable **roll, pitch, and yaw** (heading).
 
-* Accelerometer
-* Gyroscope
+- Gyroscope → fast response, low noise, long‑term drift.
+- Accelerometer → no drift, but noisy.
+- Mahony filter combines both for robust orientation.
 
-The Mahony filter combines both.
-
-It provides:
-
-* Roll
-* Pitch
-* Yaw (heading)
-
-## Why Mahony Filter?
-
-Gyroscope:
-
-* Smooth
-* Fast
-* Drifts over time
-
-Accelerometer:
-
-* Stable
-* Noisy
-
-Mahony filter combines both for stable orientation.
+Because the MPU6050 **has no magnetometer**, heading is **relative** to the initial orientation. Small drift may occur over long walks, but it is sufficient for short‑range navigation.
 
 ---
 
-# 8. Yaw / Heading Angle
+### Yaw / Heading Angle
 
-Yaw is the direction user faces.
-
-## Important Note
-
-MPU6050 DOES NOT contain a magnetometer.
-
-Therefore:
-
-* Heading is RELATIVE
-* Small drift occurs over long walks
-
-Still sufficient for short-range navigation.
+Yaw is the direction the user faces. In this implementation, it is the filtered angle from the Mahony filter, used directly in the position update equations.
 
 ---
 
-# 9. 1D Kalman Filter for Step Length
+### 1D Kalman Filter for Step Length
 
-Walking steps are not identical.
+Step lengths vary naturally. A 1D Kalman filter smooths the measured step length:
 
-Kalman filtering smooths step length.
+**Prediction:**  
+$$
+\hat{x}_k^- = \hat{x}_{k-1}
+$$
 
-## Prediction
-
-[
-\hat{x}*k^- = \hat{x}*{k-1}
-]
-
-## Kalman Gain
-
-[
+**Kalman Gain:**  
+$$
 K_k = \frac{P_k^-}{P_k^- + R}
-]
+$$
 
-## Update
+**Update:**  
+$$
+\hat{x}_k = \hat{x}_k^- + K_k (z_k - \hat{x}_k^-)
+$$
 
-[
-\hat{x}_k = \hat{x}_k^- + K_k(z_k - \hat{x}_k^-)
-]
+| Symbol      | Meaning                       |
+|-------------|-------------------------------|
+| $z_k$       | Measured step length          |
+| $\hat{x}_k$ | Filtered step length          |
+| $K_k$       | Kalman gain                   |
+| $P_k^-$     | Predicted error covariance    |
+| $R$         | Measurement noise covariance  |
 
-Where:
-
-| Symbol      | Meaning              |
-| ----------- | -------------------- |
-| (z_k)       | Measured step length |
-| (\hat{x}_k) | Filtered step length |
-| (K_k)       | Kalman gain          |
-
-Result:
-
-* Less fluctuation
-* More stable tracking
-* Better path accuracy
+Result: less fluctuation, more stable tracking, better path accuracy.
 
 ---
 
-# 10. Distance to Home
+### Distance to Home
 
-Current position:
+From current position $(x, y)$:
 
-[
-(x,y)
-]
-
-Distance back to home:
-
-[
+$$
 D = \sqrt{x^2 + y^2}
-]
+$$
 
-Example:
-
-If:
-
-* x = 3 m
-* y = 4 m
-
-Then:
-
-[
-D = \sqrt{3^2 + 4^2}
-]
-
-[
-D = 5m
-]
+Example: $x = 3$ m, $y = 4$ m → $D = 5$ m.
 
 ---
 
-# 11. Bearing to Home
+### Bearing to Home
 
-Bearing angle toward home:
+The angle (in degrees) pointing from current position back to the origin:
 
-[
-\theta_{home} = atan2(-x,-y)
-]
+$$
+\theta_{home} = \text{atan2}(-x, -y)
+$$
 
-This tells the ESP32 which direction user must turn.
+This tells the ESP32 which direction the user must turn.
 
 ---
 
-# 12. Turn Decision Logic
+### Turn Decision Logic
 
-## Error Angle
-
-[
-Error = \theta_{home} - \theta_{current}
-]
-
-## Decision
+Error angle = $\theta_{home} - \theta_{current}$ (normalised to $[-180^\circ, 180^\circ]$).
 
 | Error Range           | Action      |
-| --------------------- | ----------- |
-| > +15°                | Turn Right  |
-| < -15°                | Turn Left   |
-| Between -15° and +15° | Go Straight |
+|-----------------------|-------------|
+| $> +15^\circ$         | Turn Right  |
+| $< -15^\circ$         | Turn Left   |
+| Between $-15^\circ$ and $+15^\circ$ | Go Straight |
 
 ---
 
+## Data Logging
 
-# 13. Excel File Columns
-## Excel Columns
+### Excel Columns
 
-| Column Name   | Meaning              |
-| ------------- | -------------------- |
-| timestamp     | Time in milliseconds |
-| ax            | Accelerometer X      |
-| ay            | Accelerometer Y      |
-| az            | Accelerometer Z      |
-| gx            | Gyroscope X          |
-| gy            | Gyroscope Y          |
-| gz            | Gyroscope Z          |
-| heading_deg   | Heading angle        |
-| step_detected | 1 if step detected   |
-| step_length   | Step length          |
-| x_pos         | X coordinate         |
-| y_pos         | Y coordinate         |
-| distance_home | Distance to home     |
-| guide_idx     | Guidance instruction |
+Logged to `track_points.csv`:
 
----
+| Column Name     | Meaning                          |
+|----------------|----------------------------------|
+| timestamp      | Time in milliseconds             |
+| ax, ay, az     | Raw accelerometer values         |
+| gx, gy, gz     | Raw gyroscope values             |
+| heading_deg    | Current heading (degrees)        |
+| step_detected  | 1 if a step was detected         |
+| step_length    | Filtered step length (m)         |
+| x_pos, y_pos   | Current X/Y coordinates          |
+| distance_home  | Distance to home (m)             |
+| guide_idx      | Guidance instruction code        |
 
-# 14. Meaning of guide_idx
+### guide_idx Meaning
 
-| guide_idx Value | Meaning      |
-| --------------- | ------------ |
-| 0               | Go Straight  |
-| 1               | Turn Left    |
-| 2               | Turn Right   |
-| 3               | Arrived Home |
+| guide_idx | Meaning      |
+|-----------|--------------|
+| 0         | Go Straight  |
+| 1         | Turn Left    |
+| 2         | Turn Right   |
+| 3         | Arrived Home |
 
-The Python visualizer uses this column to overlay arrows and turn instructions.
+The Python visualiser uses this column to overlay arrows and turn instructions.
 
 ---
 
-# 15. Why Earlier Map Looked Wrong
+## Why Earlier Map Looked Wrong
 
-Main reasons:
+Common issues that have been fixed:
 
-1. X/Y axis mismatch
-2. Wrong angle convention
-3. No heading normalization
-4. Random drift accumulation
-5. No filtering
-6. Incorrect overlay scaling
-
-The updated implementation fixes these problems using:
-
-* Low-pass filtering
-* Mahony orientation estimation
-* 1D Kalman smoothing
-* Correct North/East coordinate convention
-* Stable dead reckoning equations
-* Proper Python plot scaling
+1. **X/Y axis mismatch** – now using consistent North/East convention.
+2. **Wrong angle convention** – corrected to $0^\circ$ = North, increasing clockwise.
+3. **No heading normalisation** – angles are wrapped to $[0,360)$.
+4. **Random drift accumulation** – reduced by Kalman and Mahony filters.
+5. **No filtering** – low‑pass and Kalman filters applied.
+6. **Incorrect overlay scaling** – Python plot uses equal aspect ratio.
 
 ---
 
-# 16. Final Processing Pipeline
+## Processing Pipeline
 
-## ESP32 Processing
+### ESP32 Processing
 
-1. Read MPU6050
-2. Compute acceleration magnitude
-3. Apply low-pass filter
-4. Detect steps
-5. Estimate heading using Mahony filter
-6. Smooth step length with Kalman filter
-7. Update X/Y position
-8. Send data to Python logger
-9. Display UI on OLED
+1. Read MPU6050 (accelerometer + gyroscope).
+2. Compute acceleration magnitude.
+3. Apply low‑pass filter.
+4. Detect steps (threshold + refractory period).
+5. Estimate heading using Mahony filter.
+6. Smooth step length with 1D Kalman filter.
+7. Update X/Y position using dead reckoning.
+8. Send data to serial (for Python logger).
+9. Display UI on OLED.
 
----
+### OLED UI Improvements
 
-# 17. OLED UI Improvements
+The OLED now shows:
 
-Updated UI now shows:
+- X position
+- Y position
+- Heading
+- Distance to home
+- Direction arrow
+- Step count
+- Guide mode status
 
-* X position
-* Y position
-* Heading
-* Distance to home
-* Direction arrow
-* Step count
-* Guide mode status
+### Python Overlay Improvements
 
-This fixes the previous issue where Y-axis was missing.
+The updated visualiser (`trailtracer_final.py`) provides:
 
----
-
-# 18. Python Overlay Improvements
-
-Updated Python visualizer:
-
-* Correct axis orientation
-* Proper North arrow
-* Real-time path plotting
-* Turn instruction overlay
-* Stable scaling
-* No random jumps
-* Home marker display
-* CSV logging support
+- Correct axis orientation (North up).
+- Real‑time path plotting.
+- Turn instruction overlay (arrows).
+- Stable scaling (no random jumps).
+- Home marker display.
+- CSV logging and KML/HTML/PNG export.
 
 ---
 
-# 19. Recommended Parameters
+## Recommended Parameters
 
 | Parameter           | Recommended Value |
-| ------------------- | ----------------- |
+|---------------------|-------------------|
 | Sampling Rate       | 50 Hz             |
-| LPF Alpha           | 0.9               |
-| Step Threshold      | 11.2              |
+| LPF Alpha ($\alpha$)| 0.9               |
+| Step Threshold      | 11.2 m/s²         |
 | Refractory Time     | 300 ms            |
 | Average Step Length | 0.70 m            |
 | Mahony Kp           | 2.0               |
@@ -454,67 +322,22 @@ Updated Python visualizer:
 
 ---
 
-
-
-# 20. How to run
+## How to Run
 
 ### ESP32
-1. Open `TrailTracer_final.ino`
-2. Install required Arduino libraries:
+
+1. Open `TrailTracer_final.ino` in Arduino IDE.
+2. Install required libraries:
    - Adafruit GFX
    - Adafruit SSD1306
    - Adafruit MPU6050
    - Adafruit Unified Sensor
-3. Upload to ESP32
+3. Select the correct board (ESP32 dev module) and port.
+4. Upload the sketch.
 
 ### Python
-Install:
+
+Install dependencies:
 
 ```bash
 pip install pyserial matplotlib folium
-```
-
-Run simulation:
-
-```bash
-python trailtracer_final.py --mode sim
-```
-
-Run live ESP32 mode:
-
-```bash
-python trailtracer_final.py --mode serial --port COM3
-```
-
-## Output files
-
-Saved in `resources/`:
-
-- `track_points.csv`
-- `track_points.kml`
-- `tracker_map_live.html`
-- `simulation_plot.png`
-
-## Notes
-
-Because the MPU6050 has no magnetometer, the heading is not absolute north unless the walk starts with a known orientation. For best results, start the walk facing a consistent direction.
-
-
-# 21. Final Summary
-
-TrailTracer works without GPS by:
-
-* Detecting steps using MPU6050
-* Estimating heading using Mahony AHRS
-* Smoothing motion using filters
-* Updating local X/Y coordinates
-* Guiding user back to home
-
-The system is:
-
-* Offline
-* Portable
-* Low-cost
-* Low-power
-* Real-time
-* Suitable for tunnels, forests, and indoor navigation
