@@ -167,23 +167,35 @@ $$
 \hat{x}_k^- = \hat{x}_{k-1}
 $$
 
+**Error covariance prediction:**  
+$$
+P_k^- = P_{k-1} + Q
+$$
+
 **Kalman Gain:**  
 $$
 K_k = \frac{P_k^-}{P_k^- + R}
 $$
 
-**Update:**  
+**State update:**  
 $$
 \hat{x}_k = \hat{x}_k^- + K_k (z_k - \hat{x}_k^-)
 $$
 
-| Symbol      | Meaning                       |
-|-------------|-------------------------------|
-| $z_k$       | Measured step length          |
-| $\hat{x}_k$ | Filtered step length          |
-| $K_k$       | Kalman gain                   |
-| $P_k^-$     | Predicted error covariance    |
-| $R$         | Measurement noise covariance  |
+**Error covariance update:**  
+$$
+P_k = (1 - K_k) P_k^-
+$$
+
+| Symbol      | Meaning                          |
+|-------------|----------------------------------|
+| $z_k$       | Measured step length             |
+| $\hat{x}_k$ | Filtered step length             |
+| $K_k$       | Kalman gain                      |
+| $P_k^-$     | Predicted error covariance       |
+| $P_k$       | Updated error covariance         |
+| $Q$         | Process noise covariance         |
+| $R$         | Measurement noise covariance     |
 
 Result: less fluctuation, more stable tracking, better path accuracy.
 ---
