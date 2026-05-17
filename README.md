@@ -186,7 +186,6 @@ $$
 | $R$         | Measurement noise covariance  |
 
 Result: less fluctuation, more stable tracking, better path accuracy.
-
 ---
 
 ### Distance to Home
