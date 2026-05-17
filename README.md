@@ -199,7 +199,7 @@ $$
 
 Result: less fluctuation, more stable tracking, better path accuracy.
 ---
-
+---
 ### Distance to Home
 
 From current position $(x, y)$:
