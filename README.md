@@ -456,7 +456,7 @@ Updated Python visualizer:
 
 
 
-# 21. How to run
+# 20. How to run
 
 ### ESP32
 1. Open `TrailTracer_final.ino`
